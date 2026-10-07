@@ -1,7 +1,7 @@
 #!/bin/bash
-# U-Boot Environment Variables – fixed & cleaned
+# U-Boot Environment – cleaned & compatible with your previous working setup
 
-# Repositories
+# Repositories (same as your old working version)
 UBOOT_REPO="https://github.com/varigit/uboot-imx.git"
 UBOOT_BRANCH="lf_v2023.04_var02"
 
@@ -23,7 +23,7 @@ DDR_FIRMWARE_URL="${DDR_FIRMWARE_BASE_URL}firmware-imx-${DDR_FIRMWARE_VERSION}.b
 CROSS_COMPILE_ARM64="aarch64-linux-gnu-"
 ARCH_ARM64="arm64"
 
-# Optional: enable ccache if present
+# Optional ccache
 if command -v ccache &>/dev/null; then
   CROSS_COMPILE_ARM64="ccache ${CROSS_COMPILE_ARM64}"
   ccache --max-size=20G
@@ -31,7 +31,7 @@ fi
 
 LOGFILE="./uboot_build.log"
 
-# Board specific
+# Board specific (same as your old working setup)
 UBOOT_DTB_NAME="imx8mp-var-dart-dt8mcustomboard.dtb"
 UBOOT_DTB_EXTRA="imx8mp-var-som-symphony.dtb"
 DTBS="${UBOOT_DTB_NAME} ${UBOOT_DTB_EXTRA}"

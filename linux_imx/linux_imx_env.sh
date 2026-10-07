@@ -7,7 +7,7 @@
 
 # Linux repository for the IMX chips
 LINUX_IMX_REPO="https://github.com/varigit/linux-imx.git"
-LINUX_IMX_BRANCH="lf-6.6.y_var01"  # Change this as per your requirement
+LINUX_IMX_BRANCH="lf-6.6.y_6.6.52-2.2.2_var01" # Change this as per your requirement
 
 # Cross Compiling settings
 CROSS_COMPILE="aarch64-linux-gnu-"
