@@ -215,7 +215,7 @@ clone_or_update_linux_imx() {
     fi
   else
     log_step "Cloning repository..."
-    log_and_run git clone --branch $LINUX_IMX_BRANCH $LINUX_IMX_REPO "$WORKDIR/linux-imx"
+    log_and_run git clone --depth 1 --single-branch --branch $LINUX_IMX_BRANCH $LINUX_IMX_REPO "$WORKDIR/linux-imx"
   fi
   log_step "Linux IMX repository is up to date."
 }
@@ -253,16 +253,16 @@ build_dts() {
 
   if [ "$CUSTOM_DTS" = "all" ]; then
     log_step "Building all DTS files..."
-    log_and_run make dtbs
+    log_and_run make freescale/imx8mp-var-dart-dt8mcustomboard.dtb freescale/imx8mp-var-som-symphony.dtb
   else
     log_step "Building specified DTS files: $CUSTOM_DTS"
     IFS=',' read -ra DTS_ARRAY <<< "$CUSTOM_DTS"
     for dts_file in "${DTS_ARRAY[@]}"; do
-      if [ ! -f "arch/$ARCH/boot/dts/$dts_file.dts" ]; then
+      if [ ! -f "arch/$ARCH/boot/dts/freescale/$dts_file.dts" ]; then
         log_step "Error: DTS file $dts_file does not exist."
         exit 1
       fi
-      log_and_run make "arch/$ARCH/boot/dts/$dts_file.dtb"
+      log_and_run make "freescale/$dts_file.dtb"
     done
   fi
   log_step "DTS build process completed."
@@ -310,7 +310,7 @@ install_kernel_and_dtb() {
 
   if [ "$CUSTOM_DTS" = "all" ]; then
     log_step "Copying all DTBs to output directory..."
-    cp -r "$WORKDIR/linux-imx/arch/$ARCH/boot/dts" "$OUTPUT_DIR/"
+    mkdir -p "$OUTPUT_DIR/dts" && cp "$WORKDIR/linux-imx/arch/$ARCH/boot/dts/freescale/imx8mp-var-"*.dtb "$OUTPUT_DIR/dts/"
   else
     log_step "Copying specified DTBs..."
     mkdir -p "$OUTPUT_DIR/dts"
@@ -324,7 +324,7 @@ install_kernel_and_dtb() {
   ROOTFS_DIR="$WORKDIR/linux-imx-kernel-output/rootfs"
   rm -rf "$ROOTFS_DIR"
   mkdir -p "$ROOTFS_DIR"
-  log_and_run make ARCH=$ARCH INSTALL_MOD_PATH="$ROOTFS_DIR" modules_install
+  log_and_run make ARCH=$ARCH INSTALL_MOD_STRIP=1 INSTALL_MOD_PATH="$ROOTFS_DIR" modules_install
 
 #   cp -r "$ROOTFS_DIR" "$OUTPUT_DIR/"
   validate_output
@@ -336,72 +336,69 @@ install_kernel_and_dtb() {
 # ===========================================
 find_partition_by_label() {
   local label_pattern=$1
-  lsblk -o LABEL,NAME | awk -v pattern="$label_pattern" '$1 ~ pattern {print "/dev/" $2}'
+  lsblk -nrpo NAME,LABEL "$FLASH_DEVICE" | awk -v p="$1" '$2 == p {print $1}'
 }
 
 create_and_mount_partitions() {
-  log_step "Checking and preparing partitions on $FLASH_DEVICE..."
-
-  BOOT_PART=$(find_partition_by_label "$BOOT_LABEL_PATTERN")
-  ROOTFS_PART=$(find_partition_by_label "$ROOTFS_LABEL")
-
-  if [ -z "$BOOT_PART" ]; then
-    log_step "Creating BOOT partition..."
-    sudo parted "$FLASH_DEVICE" --script mklabel msdos
-    sudo parted "$FLASH_DEVICE" --script mkpart primary fat32 1MiB 256MiB
-    sudo mkfs.vfat -n "BOOT" "${FLASH_DEVICE}1"
-    BOOT_PART="${FLASH_DEVICE}1"
-  fi
-
-  if [ -z "$ROOTFS_PART" ]; then
-    log_step "Creating rootfs partition..."
-    sudo parted "$FLASH_DEVICE" --script mkpart primary ext4 256MiB 100%
-    sudo mkfs.ext4 -L "$ROOTFS_LABEL" "${FLASH_DEVICE}2"
-    ROOTFS_PART="${FLASH_DEVICE}2"
-  fi
-
-  BOOT_MOUNT=$(mktemp -d)
+  [ -b "$FLASH_DEVICE" ] || { echo "$FLASH_DEVICE is not a block device"; exit 1; }
+  lsblk -o NAME,SIZE,MODEL,RM "$FLASH_DEVICE"
+  read -rp "ERASE ALL of $FLASH_DEVICE? [y/N] " a; [[ "$a" =~ ^[Yy]$ ]] || exit 0
+  sudo umount "${FLASH_DEVICE}"* 2>/dev/null || true
+  sudo dd if=/dev/zero of="$FLASH_DEVICE" bs=1M count=16 conv=fsync
+  sudo parted -s "$FLASH_DEVICE" mklabel msdos mkpart primary ext4 8MiB 100%
+  sudo partprobe "$FLASH_DEVICE"; sleep 2
+  case "$FLASH_DEVICE" in *mmcblk*|*nvme*) P=p ;; *) P= ;; esac
+  ROOTFS_PART="${FLASH_DEVICE}${P}1"
+  sudo mkfs.ext4 -F -L "$ROOTFS_LABEL" "$ROOTFS_PART"
   ROOTFS_MOUNT=$(mktemp -d)
-  log_and_run sudo mount "$BOOT_PART" "$BOOT_MOUNT"
-  log_and_run sudo mount "$ROOTFS_PART" "$ROOTFS_MOUNT"
+  sudo mount "$ROOTFS_PART" "$ROOTFS_MOUNT"
 }
 
 # Flash the kernel image and modules
 flash_kernel_and_modules() {
-  log_step "Flashing kernel image and modules to SD card..."
+  log_step "Flashing rootfs, kernel image and modules to SD card..."
   cd "$WORKDIR/linux-imx"
 
-  # Copy the kernel image to the BOOT partition
-  echo "Copying $KERNEL_IMAGE to BOOT partition..."
-  echo "Copying Kernel Image [$KERNEL_IMAGE] to BOOT partition..."
-  sudo cp "arch/$ARCH/boot/$KERNEL_IMAGE" "$BOOT_MOUNT/"
+  # 1. Root filesystem first
+  [ -n "$ROOTFS_TARBALL" ] || { echo "ERROR: -r rootfs tarball required"; exit 1; }
+  log_step "Extracting rootfs tarball..."
+  sudo tar -xpf "$ROOTFS_TARBALL" -C "$ROOTFS_MOUNT" --numeric-owner
 
-  # Install modules to the rootfs partition
+  # 2. Kernel image into /boot
+  log_step "Copying Kernel Image [$KERNEL_IMAGE] to /boot..."
+  sudo mkdir -p "$ROOTFS_MOUNT/boot"
+  sudo cp "arch/$ARCH/boot/$KERNEL_IMAGE" "$ROOTFS_MOUNT/boot/"
+
+  # 3. Modules
   log_step "Installing kernel modules to rootfs..."
-  sudo cp -r "$OUTPUT_DIR/rootfs/"* "$ROOTFS_MOUNT/"
+  sudo mkdir -p "$ROOTFS_MOUNT/lib/modules"
+  sudo cp -a "$OUTPUT_DIR/rootfs/lib/modules/." "$ROOTFS_MOUNT/lib/modules/"
 }
 
 # Flash the device tree blobs
 flash_device_trees() {
   log_step "Flashing device tree blobs to BOOT partition..."
-  sudo cp "$OUTPUT_DIR/dts/"*.dtb "$BOOT_MOUNT/"
+  sudo cp "$OUTPUT_DIR/dts/"*.dtb "$BOOT_MOUNT/boot/"
 }
 
 unmount_partitions() {
+  sync
   log_step "Unmounting partitions..."
-  log_and_run sudo umount "$BOOT_MOUNT"
   log_and_run sudo umount "$ROOTFS_MOUNT"
-  rm -rf "$BOOT_MOUNT" "$ROOTFS_MOUNT"
+  rm -rf "$ROOTFS_MOUNT"
 }
 
 # ===========================================
 # Flash SD Card
 # ===========================================
-
 flash_sd_card() {
+  [ -f "$WORKDIR/imx-boot-tools/imx-boot-sd.bin" ] || {
+  echo "ERROR: run uboot_imx_build.sh -w $WORKDIR -t image first"; exit 1; }
   create_and_mount_partitions
   flash_kernel_and_modules
   flash_device_trees
+  log_step "Writing U-Boot (imx-boot-sd.bin) at 32 KiB..."
+  sudo dd if="$WORKDIR/imx-boot-tools/imx-boot-sd.bin" of="$FLASH_DEVICE" bs=1K seek=32 conv=fsync status=progress
   unmount_partitions
   log_step "SD card flashing completed successfully."
 }

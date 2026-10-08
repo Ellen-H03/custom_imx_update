@@ -27,25 +27,26 @@ WORKDIR=""
 
 usage() {
   cat <<EOF
-Usage: $0 -w <workdir> [-d <device>] [-b <target>] [-n] [-v] [-h]
+Usage: $0 -w <workdir> [-d <device>] [-t <target>] [-n] [-v] [-h]
   -w  Working directory (required)
-  -d  Block device for flashing (e.g. /dev/sdX)
-  -b  Target: prep | uboot | atf | image | flash | all | clean:xxx
+  -d  Block device (only used by -t flash)
+  -t  Target: prep | uboot | atf | image | flash | all | clean:xxx  (default: all)
+  -b  Same as -t (compatibility)
   -n  Dry-run flash
   -v  Verbose
 EOF
   exit 1
 }
 
-while getopts "w:d:b:nvh" opt; do
+while getopts "w:d:t:b:nvh" opt; do
   case $opt in
     w) WORKDIR=$OPTARG ;;
     d) DEVICE=$OPTARG ;;
+    t) BUILD_TARGET=$OPTARG ;;
     b) BUILD_TARGET=$OPTARG ;;
     n) DRY_RUN=true ;;
     v) VERBOSE=true ;;
-    h) usage ;;
-    *) usage ;;
+    h|*) usage ;;
   esac
 done
 
@@ -100,6 +101,7 @@ build_uboot() {
   local dir="$WORKDIR/uboot-imx"
   clone_or_update "$UBOOT_REPO" "$UBOOT_BRANCH" "$dir"
   cd "$dir"
+  command -v ccache &>/dev/null && ccache --max-size=20G || true
   export ARCH=$ARCH_ARM64 CROSS_COMPILE=$CROSS_COMPILE_ARM64
   make mrproper
   make "$UBOOT_DEFCONFIG"
@@ -216,22 +218,12 @@ build_image() {
 
   cd "$mk" || { echo "Cannot enter $mk"; exit 1; }
 
-  # Clean previous build
-  make -C iMX8M clean || true
+  # Clean previous build (top-level Makefile has the clean rule)
+  make clean || true
 
-  log "Running: make SOC=iMX8MP $UBOOT_TARGETS"
+  log "Running: make SOC=iMX8MP dtbs=\"$DTBS\" $UBOOT_TARGETS"
+  make SOC=iMX8MP dtbs="$DTBS" $UBOOT_TARGETS
 
-  if $VERBOSE; then
-    make SOC=iMX8MP \
-         dtbs="$DTBS" \
-         $UBOOT_TARGETS
-  else
-    make SOC=iMX8MP \
-         dtbs="$DTBS" \
-         $UBOOT_TARGETS
-  fi
-
-  # The output is normally flash.bin inside iMX8M/
   local generated=""
   if [ -f "$imx8m/flash.bin" ]; then
     generated="$imx8m/flash.bin"
@@ -244,10 +236,10 @@ build_image() {
     exit 1
   fi
 
-  # Copy the final image to a convenient place
   cp -f "$generated" "$tools/$OUTPUT_IMAGE"
   log "Boot image ready: $tools/$OUTPUT_IMAGE"
 }
+
 
 flash_image() {
   local img="$WORKDIR/$UBOOT_TOOLS_DIR/$OUTPUT_IMAGE"
@@ -295,11 +287,11 @@ case $BUILD_TARGET in
     build_atf
     prepare_mkimage
     build_image
-    if [ -n "$DEVICE" ]; then
-      flash_image
-    else
-      log "No device given – skipping flash"
-    fi
+    log "Boot image ready. Flash the whole card with linux_imx_build.sh -f <device>"
+    ;;
+  flash)
+    [ -n "$DEVICE" ] || { echo "ERROR: -d <device> required for flash"; exit 1; }
+    flash_image
     ;;
   clean:*)
     target=${BUILD_TARGET#clean:}
@@ -315,5 +307,4 @@ case $BUILD_TARGET in
     usage
     ;;
 esac
-
 log "Done." 

@@ -26,7 +26,6 @@ ARCH_ARM64="arm64"
 # Optional ccache
 if command -v ccache &>/dev/null; then
   CROSS_COMPILE_ARM64="ccache ${CROSS_COMPILE_ARM64}"
-  ccache --max-size=20G
 fi
 
 LOGFILE="./uboot_build.log"
